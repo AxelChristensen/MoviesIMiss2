@@ -6,19 +6,52 @@
 //
 
 import SwiftUI
+import SwiftData
 
 struct ContentView: View {
+    @State private var tmdbService = TMDBService()
+    
     var body: some View {
-        VStack {
-            Image(systemName: "globe")
-                .imageScale(.large)
-                .foregroundStyle(.tint)
-            Text("Hello, world!")
+        Group {
+            if tmdbService.hasAPIKey {
+                mainTabView
+            } else {
+                APIKeySetupView()
+            }
         }
-        .padding()
+    }
+    
+    private var mainTabView: some View {
+        TabView {
+            MovieListView()
+                .tabItem {
+                    Label("Browse", systemImage: "magnifyingglass")
+                }
+            
+            AgainListView()
+                .tabItem {
+                    Label("Again!", systemImage: "arrow.triangle.2.circlepath")
+                }
+            
+            NewMoviesView()
+                .tabItem {
+                    Label("New!", systemImage: "sparkles")
+                }
+            
+            ActorSearchView()
+                .tabItem {
+                    Label("Actors", systemImage: "person.fill.viewfinder")
+                }
+            
+            NotificationDebugView()
+                .tabItem {
+                    Label("Debug", systemImage: "hammer.fill")
+                }
+        }
     }
 }
 
 #Preview {
     ContentView()
+        .modelContainer(for: SavedMovie.self, inMemory: true)
 }
