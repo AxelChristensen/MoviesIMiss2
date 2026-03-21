@@ -22,6 +22,9 @@ See `BugsAndImprovements.txt` for complete list:
 **Enhancements:**
 1. ⏳ Add directors
 
+**Questions:**
+1.  How can I save information users add regarding a movie (like 'Mood') so that other users can access it?
+
 ---
 
 ## 🚀 Deployment Status

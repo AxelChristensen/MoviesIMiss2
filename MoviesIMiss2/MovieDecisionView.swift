@@ -20,7 +20,14 @@ struct MovieDecisionView: View {
     @State private var moodItHelpsWithString: String = ""
     @State private var selectedRewatchInterval: RewatchInterval? = nil
     
+    // Vibe fields
+    @State private var selectedVibes: [String] = []
+    @State private var vibeNotes: String = ""
+    
     enum RewatchInterval: String, CaseIterable {
+        #if DEBUG
+        case oneMinute = "In 1 Minute (Testing)" // Testing option - only in debug builds
+        #endif
         case oneMonth = "In 1 Month"
         case sixMonths = "In 6 Months"
         case oneYear = "In 1 Year"
@@ -28,6 +35,9 @@ struct MovieDecisionView: View {
         
         var icon: String {
             switch self {
+            #if DEBUG
+            case .oneMinute: return "alarm.fill"
+            #endif
             case .oneMonth: return "calendar.badge.plus"
             case .sixMonths: return "calendar"
             case .oneYear: return "calendar.circle"
@@ -38,6 +48,10 @@ struct MovieDecisionView: View {
         func calculateDate(from baseDate: Date = Date()) -> Date {
             let calendar = Calendar.current
             switch self {
+            #if DEBUG
+            case .oneMinute:
+                return calendar.date(byAdding: .minute, value: 1, to: baseDate)!
+            #endif
             case .oneMonth:
                 return calendar.date(byAdding: .month, value: 1, to: baseDate)!
             case .sixMonths:
@@ -104,6 +118,10 @@ struct MovieDecisionView: View {
                         
                         if hasSeenBefore {
                             VStack(alignment: .leading, spacing: 16) {
+                                // Vibe picker - ALWAYS show when seen before
+                                VibePicker(selectedVibes: $selectedVibes, vibeNotes: $vibeNotes)
+                                    .padding(.horizontal)
+                                
                                 // When to watch again selector
                                 VStack(alignment: .leading, spacing: 12) {
                                     Text("When do you want to watch it again?")
@@ -197,7 +215,8 @@ struct MovieDecisionView: View {
                 }
                 .padding(.vertical)
             }
-            .navigationTitle("Review Movie")
+            .navigationTitle("")
+            .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") {
@@ -255,9 +274,23 @@ struct MovieDecisionView: View {
             movie.moodWhenWatched = moodWhenWatched.isEmpty ? nil : moodWhenWatched
             movie.moodItHelpsWithString = moodItHelpsWithString.isEmpty ? nil : moodItHelpsWithString
             
+            // Save vibe data
+            movie.personalVibes = selectedVibes.isEmpty ? nil : selectedVibes
+            movie.vibeNotes = vibeNotes.isEmpty ? nil : vibeNotes
+            
             // Set next rewatch date if selected
             if let interval = selectedRewatchInterval {
                 movie.nextRewatchDate = interval.calculateDate(from: Date())
+                
+                // Schedule notification after setting the date
+                Task {
+                    do {
+                        try await NotificationManager.shared.scheduleRewatchNotification(for: movie)
+                        print("✅ Notification scheduled for \(movie.title)")
+                    } catch {
+                        print("❌ Failed to schedule notification: \(error.localizedDescription)")
+                    }
+                }
             }
         }
         

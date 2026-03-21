@@ -82,6 +82,13 @@ Title: "Christopher Nolan (Director)"
 - Updated navigation title
 - Pass search mode to `ActorMoviesView`
 - Dynamic empty states based on mode
+- Filter search results by department (acting vs directing)
+- Switch API calls based on mode in `loadMovies()`
+
+✅ **TMDBService.swift**
+- Added `fetchMoviesByDirector(personId:)` method
+- Uses `with_crew` parameter for director credits
+- Keeps `fetchMoviesByActor(personId:)` for actor credits
 
 ## How It Works
 
@@ -109,11 +116,36 @@ ActorMoviesView(actor: actor, searchMode: searchMode)
 
 ## Technical Notes
 
-### TMDB API
-- Uses the same `/search/person` endpoint for both
-- TMDB doesn't distinguish between actors and directors in search
-- The distinction is mainly for UX clarity
-- Could be enhanced with filtering by department in the future
+### TMDB API & Filtering
+
+**Person Search:**
+- Uses `/search/person` endpoint for both modes
+- **Actors Mode:** Filters to `known_for_department == "acting"`
+- **Directors Mode:** Filters to `known_for_department == "directing"`
+- This ensures you only see relevant results for each mode
+- Example: Quentin Tarantino appears in Directors, not Actors
+
+**Movie Fetching:**
+- **Actors Mode:** Uses `/discover/movie?with_cast={personId}`
+  - Gets movies where the person is in the cast
+  - Shows their acting filmography
+  
+- **Directors Mode:** Uses `/discover/movie?with_crew={personId}`
+  - Gets movies where the person is in the crew (director)
+  - Shows only movies they directed
+  - Example: Sergio Leone shows only his directed movies (The Good, the Bad and the Ugly, Once Upon a Time in the West, etc.)
+
+### Why Separate Endpoints Matter
+Without using the correct endpoint:
+- ❌ Directors would show movies they appeared in as actors
+- ❌ Mixed results of directed and acted-in movies
+- ❌ Confusing filmography
+
+With correct endpoints:
+✅ Actors show only acting credits
+✅ Directors show only directing credits
+✅ Clean, accurate filmographies
+✅ Sergio Leone shows only westerns he directed
 
 ### Future Enhancements
 

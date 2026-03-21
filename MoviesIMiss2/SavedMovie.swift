@@ -25,6 +25,10 @@ final class SavedMovie {
     var approximateWatchDate: Date?
     var nextRewatchDate: Date?
     
+    // Vibe feature - now supports multiple vibes!
+    var personalVibes: [String]?  // Store array of vibe strings
+    var vibeNotes: String?         // Optional free-form notes about the vibes
+    
     // Store status as String for SwiftData compatibility
     var statusRawValue: String
     

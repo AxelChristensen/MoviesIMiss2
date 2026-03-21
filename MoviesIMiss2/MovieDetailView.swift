@@ -13,10 +13,14 @@ struct MovieDetailView: View {
     @Environment(\.modelContext) private var modelContext
     
     @Bindable var movie: SavedMovie
-    @State private var showingDatePicker = false
     @State private var showingRelatedMovies = false
+    @State private var showingCustomDatePicker = false
+    @State private var customRewatchDate = Date()
     
     enum RewatchInterval: String, CaseIterable {
+        #if DEBUG
+        case oneMinute = "In 1 Minute (Testing)" // Testing option - only in debug builds
+        #endif
         case immediately = "Immediately"
         case nextWeek = "Next Week"
         case oneMonth = "In 1 Month"
@@ -28,6 +32,9 @@ struct MovieDetailView: View {
         
         var icon: String {
             switch self {
+            #if DEBUG
+            case .oneMinute: return "alarm.fill"
+            #endif
             case .immediately: return "bolt.fill"
             case .nextWeek: return "calendar.badge.clock"
             case .oneMonth: return "calendar.badge.plus"
@@ -42,6 +49,10 @@ struct MovieDetailView: View {
         func calculateDate(from baseDate: Date = Date()) -> Date? {
             let calendar = Calendar.current
             switch self {
+            #if DEBUG
+            case .oneMinute:
+                return calendar.date(byAdding: .minute, value: 1, to: baseDate)
+            #endif
             case .immediately:
                 return baseDate // Today/now
             case .nextWeek:
@@ -101,46 +112,6 @@ struct MovieDetailView: View {
                     
                     // Watch tracking
                     VStack(spacing: 16) {
-                        VStack(alignment: .leading, spacing: 12) {
-                            Text("Watch History")
-                                .font(.headline)
-                            
-                            if let lastWatched = movie.lastWatched {
-                                HStack {
-                                    Label("Last watched", systemImage: "clock")
-                                        .font(.subheadline)
-                                        .foregroundStyle(.secondary)
-                                    Spacer()
-                                    Button {
-                                        showingDatePicker.toggle()
-                                    } label: {
-                                        Text(lastWatched.formatted(date: .abbreviated, time: .omitted))
-                                            .font(.subheadline)
-                                        Image(systemName: "pencil")
-                                            .font(.caption)
-                                    }
-                                }
-                            } else {
-                                Label("No watch date logged", systemImage: "exclamationmark.circle")
-                                    .font(.subheadline)
-                                    .foregroundStyle(.orange)
-                            }
-                            
-                            if showingDatePicker {
-                                DatePicker("", selection: Binding(
-                                    get: { movie.lastWatched ?? Date() },
-                                    set: { movie.lastWatched = $0 }
-                                ), displayedComponents: .date)
-                                .datePickerStyle(.graphical)
-                                .onChange(of: movie.lastWatched) { _, _ in
-                                    try? modelContext.save()
-                                }
-                            }
-                        }
-                        .padding()
-                        .background(.regularMaterial)
-                        .cornerRadius(12)
-                        
                         Button {
                             logWatchedToday()
                         } label: {
@@ -168,10 +139,19 @@ struct MovieDetailView: View {
                                             .fontWeight(.semibold)
                                     }
                                     Spacer()
-                                    Button("Change") {
-                                        // Show menu to change
+                                    Menu {
+                                        ForEach(RewatchInterval.allCases, id: \.self) { interval in
+                                            Button {
+                                                setRewatchInterval(interval)
+                                            } label: {
+                                                Label(interval.rawValue, systemImage: interval.icon)
+                                            }
+                                        }
+                                    } label: {
+                                        Text("Change")
+                                            .font(.subheadline)
+                                            .foregroundStyle(.blue)
                                     }
-                                    .font(.subheadline)
                                 }
                                 .padding()
                                 .background(Color.green.opacity(0.1))
@@ -271,6 +251,43 @@ struct MovieDetailView: View {
             .sheet(isPresented: $showingRelatedMovies) {
                 RelatedMoviesView(movie: movie)
             }
+            .sheet(isPresented: $showingCustomDatePicker) {
+                NavigationStack {
+                    VStack(spacing: 20) {
+                        Text("Choose a custom rewatch date")
+                            .font(.headline)
+                            .padding(.top)
+                        
+                        DatePicker(
+                            "Rewatch Date",
+                            selection: $customRewatchDate,
+                            in: Date()..., // Only future dates
+                            displayedComponents: [.date]
+                        )
+                        .datePickerStyle(.graphical)
+                        .padding()
+                        
+                        Spacer()
+                    }
+                    .navigationTitle("Custom Date")
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar {
+                        ToolbarItem(placement: .cancellationAction) {
+                            Button("Cancel") {
+                                showingCustomDatePicker = false
+                            }
+                        }
+                        ToolbarItem(placement: .confirmationAction) {
+                            Button("Save") {
+                                movie.nextRewatchDate = customRewatchDate
+                                try? modelContext.save()
+                                showingCustomDatePicker = false
+                            }
+                        }
+                    }
+                }
+                .presentationDetents([.medium, .large])
+            }
         }
     }
     
@@ -319,14 +336,23 @@ struct MovieDetailView: View {
         movie.nextRewatchDate = nil
         
         try? modelContext.save()
-        showingDatePicker = false
     }
     
     private func setRewatchInterval(_ interval: RewatchInterval) {
-        // Always calculate from today, not from last watched date
-        if let date = interval.calculateDate(from: Date()) {
-            movie.nextRewatchDate = date
+        if interval == .custom {
+            // Show custom date picker
+            customRewatchDate = movie.nextRewatchDate ?? Calendar.current.date(byAdding: .month, value: 1, to: Date()) ?? Date()
+            showingCustomDatePicker = true
+        } else if interval == .never {
+            // Clear the rewatch date
+            movie.nextRewatchDate = nil
             try? modelContext.save()
+        } else {
+            // Calculate date from interval
+            if let date = interval.calculateDate(from: Date()) {
+                movie.nextRewatchDate = date
+                try? modelContext.save()
+            }
         }
     }
     

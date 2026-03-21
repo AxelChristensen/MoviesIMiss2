@@ -6,6 +6,7 @@
 //
 
 import SwiftUI
+import Combine
 
 /// A simple image cache using NSCache
 class ImageCache {
@@ -125,13 +126,4 @@ struct CachedAsyncImage<Content: View, Placeholder: View>: View {
     }
 }
 
-// Convenience extension for simple usage
-extension CachedAsyncImage where Content == Image, Placeholder == Color {
-    init(url: URL?) {
-        self.init(
-            url: url,
-            content: { image in image },
-            placeholder: { Color.gray.opacity(0.2) }
-        )
-    }
-}
+

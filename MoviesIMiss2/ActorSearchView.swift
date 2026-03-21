@@ -16,6 +16,40 @@ struct ActorSearchView: View {
     @State private var isSearching = false
     @State private var errorMessage: String?
     @State private var selectedActor: TMDBPerson?
+    @State private var searchMode: SearchMode = .actors
+    
+    enum SearchMode: String, CaseIterable {
+        case actors = "Actors"
+        case directors = "Directors"
+        
+        var icon: String {
+            switch self {
+            case .actors: return "person.fill"
+            case .directors: return "film.stack"
+            }
+        }
+        
+        var prompt: String {
+            switch self {
+            case .actors: return "Search for an actor..."
+            case .directors: return "Search for a director..."
+            }
+        }
+        
+        var emptyTitle: String {
+            switch self {
+            case .actors: return "Search for Actors"
+            case .directors: return "Search for Directors"
+            }
+        }
+        
+        var emptyDescription: String {
+            switch self {
+            case .actors: return "Enter an actor's name to find their movies"
+            case .directors: return "Enter a director's name to find their movies"
+            }
+        }
+    }
     
     var body: some View {
         NavigationStack {
@@ -23,18 +57,35 @@ struct ActorSearchView: View {
                 if !tmdbService.hasAPIKey {
                     apiKeyMissingView
                 } else {
-                    searchResultsView
+                    VStack(spacing: 0) {
+                        // Segmented control for switching between actors and directors
+                        Picker("Search Mode", selection: $searchMode) {
+                            ForEach(SearchMode.allCases, id: \.self) { mode in
+                                Label(mode.rawValue, systemImage: mode.icon)
+                                    .tag(mode)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                        .padding()
+                        .onChange(of: searchMode) { oldValue, newValue in
+                            // Clear search when switching modes
+                            searchResults = []
+                            errorMessage = nil
+                        }
+                        
+                        searchResultsView
+                    }
                 }
             }
-            .navigationTitle("Search by Actor")
-            .searchable(text: $searchText, prompt: "Search for an actor...")
+            .navigationTitle(searchMode == .actors ? "Search by Actor" : "Search by Director")
+            .searchable(text: $searchText, prompt: searchMode.prompt)
             .onChange(of: searchText) { oldValue, newValue in
                 Task {
                     await performSearch()
                 }
             }
             .navigationDestination(item: $selectedActor) { actor in
-                ActorMoviesView(actor: actor)
+                ActorMoviesView(actor: actor, searchMode: searchMode)
             }
         }
     }
@@ -52,9 +103,9 @@ struct ActorSearchView: View {
                 )
             } else if searchText.isEmpty {
                 ContentUnavailableView(
-                    "Search for Actors",
-                    systemImage: "person.fill.viewfinder",
-                    description: Text("Enter an actor's name to find their movies")
+                    searchMode.emptyTitle,
+                    systemImage: searchMode.icon,
+                    description: Text(searchMode.emptyDescription)
                 )
             } else if searchResults.isEmpty {
                 ContentUnavailableView.search(text: searchText)
@@ -97,9 +148,18 @@ struct ActorSearchView: View {
             
             let results = try await tmdbService.searchPeople(query: searchText)
             
-            // Filter to only actors (known for acting)
-            searchResults = results.filter { person in
-                person.knownForDepartment?.lowercased() == "acting"
+            // Filter based on search mode
+            switch searchMode {
+            case .actors:
+                // Filter to only actors (known for acting)
+                searchResults = results.filter { person in
+                    person.knownForDepartment?.lowercased() == "acting"
+                }
+            case .directors:
+                // Filter to only directors (known for directing)
+                searchResults = results.filter { person in
+                    person.knownForDepartment?.lowercased() == "directing"
+                }
             }
             
         } catch {
@@ -116,21 +176,14 @@ struct ActorRow: View {
     
     var body: some View {
         HStack(spacing: 12) {
-            // Actor profile image
+            // Actor profile image with caching
             if let url = person.profileURL() {
-                AsyncImage(url: url) { phase in
-                    switch phase {
-                    case .empty:
-                        profilePlaceholder
-                    case .success(let image):
-                        image
-                            .resizable()
-                            .aspectRatio(contentMode: .fill)
-                    case .failure:
-                        profilePlaceholder
-                    @unknown default:
-                        profilePlaceholder
-                    }
+                CachedAsyncImage(url: url) { image in
+                    image
+                        .resizable()
+                        .aspectRatio(contentMode: .fill)
+                } placeholder: {
+                    profilePlaceholder
                 }
                 .frame(width: 60, height: 60)
                 .clipShape(Circle())
@@ -180,6 +233,7 @@ struct ActorRow: View {
 
 struct ActorMoviesView: View {
     let actor: TMDBPerson
+    let searchMode: ActorSearchView.SearchMode
     
     @Environment(\.modelContext) private var modelContext
     @State private var tmdbService = TMDBService()
@@ -187,6 +241,15 @@ struct ActorMoviesView: View {
     @State private var isLoading = true
     @State private var errorMessage: String?
     @State private var selectedMovie: TMDBMovie?
+    
+    private var navigationTitle: String {
+        switch searchMode {
+        case .actors:
+            return actor.name
+        case .directors:
+            return "\(actor.name) (Director)"
+        }
+    }
     
     var body: some View {
         Group {
@@ -220,7 +283,7 @@ struct ActorMoviesView: View {
                 }
             }
         }
-        .navigationTitle(actor.name)
+        .navigationTitle(navigationTitle)
         .task {
             await loadMovies()
         }
@@ -234,7 +297,13 @@ struct ActorMoviesView: View {
         errorMessage = nil
         
         do {
-            movies = try await tmdbService.fetchMoviesByActor(personId: actor.id)
+            // Fetch movies based on search mode
+            switch searchMode {
+            case .actors:
+                movies = try await tmdbService.fetchMoviesByActor(personId: actor.id)
+            case .directors:
+                movies = try await tmdbService.fetchMoviesByDirector(personId: actor.id)
+            }
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -246,34 +315,91 @@ struct ActorMoviesView: View {
 struct MovieCard: View {
     let movie: TMDBMovie
     
+    @Environment(\.modelContext) private var modelContext
+    @Query private var allMovies: [SavedMovie]
+    
+    // Check if this movie is already saved
+    private var existingMovie: SavedMovie? {
+        allMovies.first { $0.tmdbId == movie.id }
+    }
+    
+    private var collectionStatus: String? {
+        guard let existing = existingMovie else { return nil }
+        
+        switch existing.status {
+        case .wantToWatch:
+            if existing.hasSeenBefore {
+                return "In Again! List"
+            } else {
+                return "In New! List"
+            }
+        case .watched:
+            return "Watched"
+        case .snoozed:
+            return "Snoozed"
+        case .removed:
+            return "Previously Removed"
+        case .pending:
+            return nil // Don't show for pending
+        }
+    }
+    
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
-            // Poster
-            if let url = movie.posterURL() {
-                AsyncImage(url: url) { phase in
-                    switch phase {
-                    case .empty:
-                        posterPlaceholder
-                    case .success(let image):
+            // Poster with caching
+            ZStack(alignment: .topTrailing) {
+                if let url = movie.posterURL() {
+                    CachedAsyncImage(url: url) { image in
                         image
                             .resizable()
                             .aspectRatio(contentMode: .fill)
-                    case .failure:
-                        posterPlaceholder
-                    @unknown default:
+                    } placeholder: {
                         posterPlaceholder
                     }
+                    .frame(width: 80, height: 120)
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                } else {
+                    posterPlaceholder
                 }
-                .frame(width: 80, height: 120)
-                .clipShape(RoundedRectangle(cornerRadius: 8))
-            } else {
-                posterPlaceholder
+                
+                // Collection badge overlay
+                if existingMovie != nil {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.title3)
+                        .foregroundStyle(.white)
+                        .background(
+                            Circle()
+                                .fill(.green)
+                                .padding(-4)
+                        )
+                        .offset(x: 8, y: -8)
+                }
             }
             
             VStack(alignment: .leading, spacing: 8) {
-                Text(movie.title)
-                    .font(.headline)
-                    .lineLimit(2)
+                HStack(spacing: 8) {
+                    Text(movie.title)
+                        .font(.headline)
+                        .lineLimit(2)
+                    
+                    Spacer()
+                }
+                
+                // Collection status badge
+                if let status = collectionStatus {
+                    HStack(spacing: 4) {
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.caption2)
+                        Text(status)
+                            .font(.caption)
+                            .fontWeight(.semibold)
+                    }
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(.green)
+                    .clipShape(Capsule())
+                }
                 
                 Text(movie.year)
                     .font(.subheadline)
@@ -300,7 +426,11 @@ struct MovieCard: View {
             Spacer()
         }
         .padding()
+        #if os(iOS)
         .background(Color(.systemBackground))
+        #else
+        .background(Color(NSColor.windowBackgroundColor))
+        #endif
         .cornerRadius(12)
         .shadow(color: Color.black.opacity(0.1), radius: 4, x: 0, y: 2)
     }
@@ -325,6 +455,10 @@ struct AddMovieSheet: View {
     @State private var moodItHelpsWithString: String = ""
     @State private var nextRewatchDate: Date?
     @State private var showingCustomDatePicker = false
+    
+    // Vibe fields
+    @State private var selectedVibes: [String] = []
+    @State private var vibeNotes: String = ""
     
     enum RewatchInterval: String, CaseIterable, Identifiable {
         case testIn1Minute = "TEST: In 1 Minute"
@@ -385,6 +519,10 @@ struct AddMovieSheet: View {
                 
                 seenBeforeSection
                 
+                // Always show vibe section
+                vibeSection
+                
+                // Only show rewatch reminder if seen before
                 if hasSeenBefore {
                     rewatchReminderSection
                 }
@@ -392,7 +530,9 @@ struct AddMovieSheet: View {
                 moodInfoSection
             }
             .navigationTitle("Add Movie")
+            #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
+            #endif
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") {
@@ -463,6 +603,12 @@ struct AddMovieSheet: View {
     private var seenBeforeSection: some View {
         Section {
             Toggle("I've seen this before", isOn: $hasSeenBefore)
+        }
+    }
+    
+    private var vibeSection: some View {
+        Section {
+            VibePicker(selectedVibes: $selectedVibes, vibeNotes: $vibeNotes)
         }
     }
     
@@ -565,6 +711,16 @@ struct AddMovieSheet: View {
             approximateWatchDate: nil,
             status: .wantToWatch // For "Again!" list when hasSeenBefore is true
         )
+        
+        // Set vibes if selected
+        if !selectedVibes.isEmpty {
+            savedMovie.personalVibes = selectedVibes
+            savedMovie.vibeNotes = vibeNotes.isEmpty ? nil : vibeNotes
+            print("   Vibes set to: \(selectedVibes.joined(separator: ", "))")
+            if let notes = savedMovie.vibeNotes {
+                print("   Vibe notes: \(notes)")
+            }
+        }
         
         // If they've seen it before, set lastWatched so it doesn't appear in "New!" list
         if hasSeenBefore {

@@ -8,19 +8,33 @@
 import SwiftUI
 
 struct VibePicker: View {
-    @Binding var selectedVibe: String?
+    @Binding var selectedVibes: [String]  // Changed to array
     @Binding var vibeNotes: String
     
     let vibes = MovieVibe.allCases
     
+    private func isSelected(_ vibe: MovieVibe) -> Bool {
+        selectedVibes.contains(vibe.rawValue)
+    }
+    
+    private func toggleVibe(_ vibe: MovieVibe) {
+        if let index = selectedVibes.firstIndex(of: vibe.rawValue) {
+            selectedVibes.remove(at: index)
+        } else {
+            selectedVibes.append(vibe.rawValue)
+        }
+    }
+    
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("What's the vibe? ✨")
-                .font(.headline)
-            
-            Text("Pick the feeling this movie gave you")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 4) {
+                Text("What's the vibe? ✨")
+                    .font(.headline)
+                
+                Text("Pick all the feelings this movie gave you")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
             
             LazyVGrid(columns: [
                 GridItem(.flexible()),
@@ -30,19 +44,15 @@ struct VibePicker: View {
                 ForEach(vibes) { vibe in
                     VibeButton(
                         vibe: vibe,
-                        isSelected: selectedVibe == vibe.rawValue
+                        isSelected: isSelected(vibe)
                     ) {
-                        if selectedVibe == vibe.rawValue {
-                            selectedVibe = nil
-                        } else {
-                            selectedVibe = vibe.rawValue
-                        }
+                        toggleVibe(vibe)
                     }
                 }
             }
             
             // Optional notes field
-            if selectedVibe != nil {
+            if !selectedVibes.isEmpty {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Add a note (optional)")
                         .font(.subheadline)
@@ -55,7 +65,7 @@ struct VibePicker: View {
                 .transition(.move(edge: .top).combined(with: .opacity))
             }
         }
-        .animation(.easeInOut, value: selectedVibe)
+        .animation(.easeInOut, value: selectedVibes)
     }
 }
 
@@ -94,7 +104,7 @@ struct VibeButton: View {
     }
 }
 
-// View for displaying a vibe badge in lists
+// View for displaying vibe badges in lists
 struct VibeBadge: View {
     let vibeString: String
     let size: BadgeSize
@@ -148,9 +158,25 @@ struct VibeBadge: View {
     }
 }
 
+// View for displaying multiple vibes
+struct VibesBadgeRow: View {
+    let vibeStrings: [String]
+    let size: VibeBadge.BadgeSize
+    
+    var body: some View {
+        if !vibeStrings.isEmpty {
+            HStack(spacing: 6) {
+                ForEach(vibeStrings, id: \.self) { vibeString in
+                    VibeBadge(vibeString: vibeString, size: size)
+                }
+            }
+        }
+    }
+}
+
 #Preview("Vibe Picker") {
     VibePicker(
-        selectedVibe: .constant("Cozy"),
+        selectedVibes: .constant(["Cozy", "Uplifting"]),
         vibeNotes: .constant("")
     )
     .padding()
@@ -161,6 +187,10 @@ struct VibeBadge: View {
         VibeBadge(vibeString: "Cozy", size: .small)
         VibeBadge(vibeString: "Intense", size: .medium)
         VibeBadge(vibeString: "Uplifting", size: .large)
+        
+        Divider()
+        
+        VibesBadgeRow(vibeStrings: ["Cozy", "Fun", "Uplifting"], size: .small)
     }
     .padding()
 }

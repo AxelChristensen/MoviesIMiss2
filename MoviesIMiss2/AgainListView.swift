@@ -25,10 +25,18 @@ struct AgainListView: View {
     }) private var watchlistMovies: [SavedMovie]
     
     @State private var selectedMovie: SavedMovie?
+    @State private var selectedVibeFilter: String? = nil // nil = show all
     
-    // Use a more explicit sorting approach
+    // Use a more explicit sorting approach with vibe filtering
     var sortedByNextWatch: [SavedMovie] {
-        let allMovies = Array(watchlistMovies)
+        var allMovies = Array(watchlistMovies)
+        
+        // Filter by vibe if one is selected
+        if let vibeFilter = selectedVibeFilter {
+            allMovies = allMovies.filter { movie in
+                movie.personalVibes?.contains(vibeFilter) ?? false
+            }
+        }
         
         // Separate movies with and without dates
         var moviesWithDates: [SavedMovie] = []
@@ -55,6 +63,8 @@ struct AgainListView: View {
         
         print("⚠️ SORTING DEBUG:")
         print("   Total watchlistMovies: \(watchlistMovies.count)")
+        print("   Vibe filter: \(selectedVibeFilter ?? "none")")
+        print("   After vibe filter: \(allMovies.count)")
         print("   Movies WITH dates: \(moviesWithDates.count)")
         print("   Movies WITHOUT dates: \(moviesWithoutDates.count)")
         print("   Combined total: \(result.count)")
@@ -62,30 +72,45 @@ struct AgainListView: View {
         return result
     }
     
+    // Get available vibes from current movies
+    var availableVibes: [MovieVibe] {
+        let allVibes = watchlistMovies.compactMap { $0.personalVibes }.flatMap { $0 }
+        let vibeStrings = Set(allVibes)
+        return MovieVibe.allCases.filter { vibeStrings.contains($0.rawValue) }
+    }
+    
     var body: some View {
         NavigationStack {
-            ScrollView {
-                if sortedByNextWatch.isEmpty {
-                    emptyStateView
-                } else {
-                    LazyVStack(spacing: 0) {
-                        ForEach(sortedByNextWatch) { movie in
-                            AgainMovieRow(movie: movie)
-                                .contentShape(Rectangle())
-                                .onTapGesture {
-                                    selectedMovie = movie
-                                }
-                                .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                                    Button(role: .destructive) {
-                                        deleteMovie(movie)
-                                    } label: {
-                                        Label("Delete", systemImage: "trash")
+            VStack(spacing: 0) {
+                // Vibe filter pills
+                if !availableVibes.isEmpty {
+                    vibeFilterScrollView
+                        .padding(.vertical, 8)
+                }
+                
+                ScrollView {
+                    if sortedByNextWatch.isEmpty {
+                        emptyStateView
+                    } else {
+                        LazyVStack(spacing: 0) {
+                            ForEach(sortedByNextWatch) { movie in
+                                AgainMovieRow(movie: movie)
+                                    .contentShape(Rectangle())
+                                    .onTapGesture {
+                                        selectedMovie = movie
                                     }
+                                    .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                                        Button(role: .destructive) {
+                                            deleteMovie(movie)
+                                        } label: {
+                                            Label("Delete", systemImage: "trash")
+                                        }
+                                    }
+                                
+                                if movie.id != sortedByNextWatch.last?.id {
+                                    Divider()
+                                        .padding(.leading, 100)
                                 }
-                            
-                            if movie.id != sortedByNextWatch.last?.id {
-                                Divider()
-                                    .padding(.leading, 100)
                             }
                         }
                     }
@@ -96,16 +121,19 @@ struct AgainListView: View {
                 ToolbarItemGroup(placement: .automatic) {
                     if !sortedByNextWatch.isEmpty {
                         ShareLink(
-                            item: MovieListDocument(
-                                content: generateShareableText(),
-                                filename: "MoviesIMiss-AgainList-\(Date().formatted(date: .abbreviated, time: .omitted)).txt"
-                            ),
+                            item: generateShareableText(),
                             preview: SharePreview(
                                 "Again! Movies List",
                                 image: Image(systemName: "film.stack")
                             )
                         ) {
                             Label("Share", systemImage: "square.and.arrow.up")
+                        }
+                        
+                        Button {
+                            shareViaActivityController()
+                        } label: {
+                            Label("Email", systemImage: "envelope")
                         }
                         
                         Button {
@@ -192,31 +220,65 @@ struct AgainListView: View {
         print("🎬 === GENERATING AGAIN LIST SHAREABLE TEXT ===")
         print("📊 Movies to export: \(sortedByNextWatch.count)")
         
-        var text = "🎬 Movies to Watch Again!\n"
-        text += "Generated on \(Date().formatted(date: .abbreviated, time: .omitted))\n\n"
+        #if os(iOS)
+        let deviceName = UIDevice.current.name
+        #else
+        let deviceName = Host.current().localizedName ?? "Mac"
+        #endif
         
+        var text = ""
+        
+        // Header
+        text += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        text += "🎬 MOVIES TO WATCH AGAIN\n"
+        text += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        text += "📱 Shared by: \(deviceName)\n"
+        text += "📅 Date: \(Date().formatted(date: .long, time: .omitted))\n"
+        text += "🎥 Total Movies: \(sortedByNextWatch.count)\n\n"
+        text += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        
+        // Movies
         for (index, movie) in sortedByNextWatch.enumerated() {
             print("   [\(index + 1)] \(movie.title)")
-            text += "\(index + 1). \(movie.title) (\(movie.year))\n"
             
+            // Movie number and title
+            text += "[\(index + 1)] \(movie.title.uppercased())\n"
+            
+            // Year
+            text += "    📽️  Year: \(movie.year)\n"
+            
+            // Rewatch info with emoji
             if let nextRewatch = movie.nextRewatchDate {
-                text += "   📅 \(formatRewatchDate(nextRewatch))\n"
+                let rewatchText = formatRewatchDate(nextRewatch)
+                let daysUntil = Calendar.current.dateComponents([.day], from: Date(), to: nextRewatch).day ?? 0
+                
+                if daysUntil < 0 {
+                    text += "    🔴 Rewatch: \(rewatchText)\n"
+                } else if daysUntil == 0 {
+                    text += "    ⭐ Rewatch: \(rewatchText)\n"
+                } else if daysUntil <= 30 {
+                    text += "    🟡 Rewatch: \(rewatchText)\n"
+                } else {
+                    text += "    🟢 Rewatch: \(rewatchText)\n"
+                }
             } else {
-                text += "   📅 No date set\n"
+                text += "    ⚪ Rewatch: No date set\n"
             }
             
+            // Mood
             if let mood = movie.moodItHelpsWithString {
-                text += "   ❤️ Helps with: \(mood)\n"
+                text += "    💗 Mood: \(mood)\n"
             }
             
             text += "\n"
         }
         
-        text += "Total: \(sortedByNextWatch.count) movie\(sortedByNextWatch.count == 1 ? "" : "s")\n"
-        text += "\nCreated with MoviesIMiss"
+        // Footer
+        text += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        text += "Created with MoviesIMiss 🎬\n"
+        text += "Find your own movies with MIM in the App Store!\n"
+        text += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         
-        print("📝 Generated text:")
-        print(text)
         print("✅ Successfully exported \(sortedByNextWatch.count) movies")
         print("=================================\n")
         
@@ -236,7 +298,12 @@ struct AgainListView: View {
         let printOperation = NSPrintOperation(view: textView, printInfo: printInfo)
         printOperation.run()
         #else
-        // For iOS, share the list instead since printing is more complex
+        shareViaActivityController()
+        #endif
+    }
+    
+    #if os(iOS)
+    private func shareViaActivityController() {
         let printText = generateShareableText()
         let activityVC = UIActivityViewController(activityItems: [printText], applicationActivities: nil)
         
@@ -245,8 +312,12 @@ struct AgainListView: View {
            let rootVC = window.rootViewController {
             rootVC.present(activityVC, animated: true)
         }
-        #endif
     }
+    #else
+    private func shareViaActivityController() {
+        // Not available on macOS
+    }
+    #endif
     
     private func formatRewatchDate(_ date: Date) -> String {
         let daysUntil = Calendar.current.dateComponents([.day], from: Date(), to: date).day ?? 0
@@ -282,20 +353,87 @@ struct AgainListView: View {
         }
     }
     
+    private var vibeFilterScrollView: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 12) {
+                // "All" button
+                Button {
+                    selectedVibeFilter = nil
+                } label: {
+                    Text("All")
+                        .font(.subheadline)
+                        .fontWeight(selectedVibeFilter == nil ? .semibold : .regular)
+                        .foregroundStyle(selectedVibeFilter == nil ? .white : .primary)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 8)
+                        .background(selectedVibeFilter == nil ? Color.blue : Color.gray.opacity(0.2))
+                        .clipShape(Capsule())
+                }
+                .buttonStyle(.plain)
+                
+                // Vibe filter buttons
+                ForEach(availableVibes) { vibe in
+                    Button {
+                        if selectedVibeFilter == vibe.rawValue {
+                            selectedVibeFilter = nil // Deselect
+                        } else {
+                            selectedVibeFilter = vibe.rawValue
+                        }
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: vibe.icon)
+                                .font(.caption2)
+                                .imageScale(.small)
+                            Text(vibe.rawValue)
+                                .font(.caption)
+                                .fontWeight(selectedVibeFilter == vibe.rawValue ? .semibold : .regular)
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.8)
+                        }
+                        .foregroundStyle(selectedVibeFilter == vibe.rawValue ? .white : vibe.color)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
+                        .background(selectedVibeFilter == vibe.rawValue ? vibe.color : vibe.color.opacity(0.15))
+                        .clipShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal)
+        }
+    }
+    
     private var emptyStateView: some View {
         VStack(spacing: 20) {
-            Image(systemName: "arrow.triangle.2.circlepath")
+            Image(systemName: selectedVibeFilter != nil ? "line.3.horizontal.decrease.circle" : "arrow.triangle.2.circlepath")
                 .font(.system(size: 60))
                 .foregroundStyle(.secondary)
             
-            Text("No Rewatch Schedule Yet")
+            Text(selectedVibeFilter != nil ? "No Movies with This Vibe" : "No Rewatch Schedule Yet")
                 .font(.title2)
                 .fontWeight(.semibold)
             
-            Text("Movies with scheduled rewatch dates will appear here")
+            Text(selectedVibeFilter != nil ? 
+                 "Try selecting a different vibe or tap 'All' to see everything" :
+                 "Movies with scheduled rewatch dates will appear here")
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)
                 .padding(.horizontal, 40)
+            
+            if selectedVibeFilter != nil {
+                Button {
+                    selectedVibeFilter = nil
+                } label: {
+                    Text("Show All Movies")
+                        .fontWeight(.semibold)
+                        .padding(.horizontal, 20)
+                        .padding(.vertical, 10)
+                        .background(.blue)
+                        .foregroundStyle(.white)
+                        .clipShape(Capsule())
+                }
+                .buttonStyle(.plain)
+            }
         }
         .padding(.vertical, 60)
     }
@@ -334,22 +472,15 @@ struct AgainMovieRow: View {
     
     var body: some View {
         HStack(spacing: 12) {
-            // Small poster
+            // Small poster with caching
             if let posterPath = movie.posterPath,
                let url = URL(string: "https://image.tmdb.org/t/p/w200\(posterPath)") {
-                AsyncImage(url: url) { phase in
-                    switch phase {
-                    case .empty:
-                        posterPlaceholder
-                    case .success(let image):
-                        image
-                            .resizable()
-                            .aspectRatio(contentMode: .fill)
-                    case .failure:
-                        posterPlaceholder
-                    @unknown default:
-                        posterPlaceholder
-                    }
+                CachedAsyncImage(url: url) { image in
+                    image
+                        .resizable()
+                        .aspectRatio(contentMode: .fill)
+                } placeholder: {
+                    posterPlaceholder
                 }
                 .frame(width: 60, height: 90)
                 .clipShape(RoundedRectangle(cornerRadius: 8))
@@ -366,6 +497,11 @@ struct AgainMovieRow: View {
                 Text(movie.year)
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
+                
+                // Vibe badges
+                if let vibes = movie.personalVibes, !vibes.isEmpty {
+                    VibesBadgeRow(vibeStrings: vibes, size: .small)
+                }
                 
                 if let nextRewatch = movie.nextRewatchDate {
                     HStack(spacing: 6) {

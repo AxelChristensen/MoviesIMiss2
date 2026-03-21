@@ -41,13 +41,31 @@ class TMDBService {
     }
     
     private func loadAPIKey() {
-        // Try to load from Secrets.plist
+        // First, try to load from Keychain (for user-provided keys)
+        if let key = KeychainHelper.shared.get(key: "TMDB_API_KEY") {
+            apiKey = key
+            return
+        }
+        
+        // Fallback: Try to load from Secrets.plist (for development)
         if let url = Bundle.main.url(forResource: "Secrets", withExtension: "plist"),
            let data = try? Data(contentsOf: url),
            let plist = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: String],
            let key = plist["TMDB_API_KEY"] {
             apiKey = key
         }
+    }
+    
+    /// Set the API key at runtime and save it to Keychain
+    func setAPIKey(_ key: String) {
+        apiKey = key
+        KeychainHelper.shared.save(key: "TMDB_API_KEY", value: key)
+    }
+    
+    /// Clear the stored API key
+    func clearAPIKey() {
+        apiKey = nil
+        KeychainHelper.shared.delete(key: "TMDB_API_KEY")
     }
     
     func searchMovies(query: String) async throws -> [TMDBMovie] {
@@ -189,6 +207,47 @@ class TMDBService {
         return try await performRequest(url: url)
     }
     
+    func fetchMoviesByActorWithFilters(actorId: Int, queryItems: [(String, String)]) async throws -> [TMDBMovie] {
+        guard let apiKey = apiKey else {
+            throw TMDBError.noAPIKey
+        }
+        
+        var components = URLComponents(string: "\(baseURL)/discover/movie")
+        var urlQueryItems = [URLQueryItem(name: "api_key", value: apiKey)]
+        
+        for (key, value) in queryItems {
+            urlQueryItems.append(URLQueryItem(name: key, value: value))
+        }
+        
+        components?.queryItems = urlQueryItems
+        
+        guard let url = components?.url else {
+            throw TMDBError.invalidURL
+        }
+        
+        return try await performRequest(url: url)
+    }
+    
+    func fetchMoviesByDirector(personId: Int, page: Int = 1) async throws -> [TMDBMovie] {
+        guard let apiKey = apiKey else {
+            throw TMDBError.noAPIKey
+        }
+        
+        var components = URLComponents(string: "\(baseURL)/discover/movie")
+        components?.queryItems = [
+            URLQueryItem(name: "api_key", value: apiKey),
+            URLQueryItem(name: "with_crew", value: "\(personId)"),
+            URLQueryItem(name: "page", value: "\(page)"),
+            URLQueryItem(name: "sort_by", value: "popularity.desc")
+        ]
+        
+        guard let url = components?.url else {
+            throw TMDBError.invalidURL
+        }
+        
+        return try await performRequest(url: url)
+    }
+    
     func fetchMovieCredits(movieId: Int) async throws -> TMDBMovieCreditsResponse {
         guard let apiKey = apiKey else {
             throw TMDBError.noAPIKey
@@ -272,18 +331,28 @@ class TMDBService {
         try await fetchMovieList(endpoint: "movie/upcoming", page: page)
     }
     
-    func fetchByGenre(genreId: Int, page: Int = 1) async throws -> [TMDBMovie] {
+    func fetchByGenre(genreId: Int, page: Int = 1, minRating: Double? = nil, actorId: Int? = nil) async throws -> [TMDBMovie] {
         guard let apiKey = apiKey else {
             throw TMDBError.noAPIKey
         }
         
         var components = URLComponents(string: "\(baseURL)/discover/movie")
-        components?.queryItems = [
+        var queryItems = [
             URLQueryItem(name: "api_key", value: apiKey),
             URLQueryItem(name: "with_genres", value: "\(genreId)"),
             URLQueryItem(name: "page", value: "\(page)"),
             URLQueryItem(name: "sort_by", value: "popularity.desc")
         ]
+        
+        if let minRating = minRating {
+            queryItems.append(URLQueryItem(name: "vote_average.gte", value: "\(minRating)"))
+        }
+        
+        if let actorId = actorId {
+            queryItems.append(URLQueryItem(name: "with_cast", value: "\(actorId)"))
+        }
+        
+        components?.queryItems = queryItems
         
         guard let url = components?.url else {
             throw TMDBError.invalidURL
@@ -292,7 +361,7 @@ class TMDBService {
         return try await performRequest(url: url)
     }
     
-    func fetchByDecade(startDate: String, endDate: String, genreId: Int? = nil, page: Int = 1) async throws -> [TMDBMovie] {
+    func fetchByDecade(startDate: String, endDate: String, genreId: Int? = nil, page: Int = 1, minRating: Double? = nil, actorId: Int? = nil) async throws -> [TMDBMovie] {
         guard let apiKey = apiKey else {
             throw TMDBError.noAPIKey
         }
@@ -309,6 +378,14 @@ class TMDBService {
         
         if let genreId = genreId {
             queryItems.append(URLQueryItem(name: "with_genres", value: "\(genreId)"))
+        }
+        
+        if let minRating = minRating {
+            queryItems.append(URLQueryItem(name: "vote_average.gte", value: "\(minRating)"))
+        }
+        
+        if let actorId = actorId {
+            queryItems.append(URLQueryItem(name: "with_cast", value: "\(actorId)"))
         }
         
         components?.queryItems = queryItems

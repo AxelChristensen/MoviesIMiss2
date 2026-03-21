@@ -63,16 +63,19 @@ struct NewMoviesView: View {
                 ToolbarItemGroup(placement: .automatic) {
                     if !newMovies.isEmpty {
                         ShareLink(
-                            item: MovieListDocument(
-                                content: generateShareableText(),
-                                filename: "MoviesIMiss-NewMovies-\(Date().formatted(date: .abbreviated, time: .omitted)).txt"
-                            ),
+                            item: generateShareableText(),
                             preview: SharePreview(
                                 "New Movies List",
                                 image: Image(systemName: "sparkles")
                             )
                         ) {
                             Label("Share", systemImage: "square.and.arrow.up")
+                        }
+                        
+                        Button {
+                            shareViaActivityController()
+                        } label: {
+                            Label("Email", systemImage: "envelope")
                         }
                         
                         Button {
@@ -97,26 +100,34 @@ struct NewMoviesView: View {
     private func generateShareableText() -> String {
         print("🎬 === GENERATING SHAREABLE TEXT ===")
         
-        var text = "✨ New Movies to Watch!\n"
-        text += "Generated on \(Date().formatted(date: .abbreviated, time: .omitted))\n\n"
+        let deviceName = UIDevice.current.name
+        
+        var text = "✨ NEW MOVIES TO WATCH\r\n"
+        text += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\r\n\r\n"
+        text += "Shared by: \(deviceName)\r\n"
+        text += "Date: \(Date().formatted(date: .long, time: .omitted))\r\n"
+        text += "Total Movies: \(newMovies.count)\r\n\r\n"
+        text += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\r\n\r\n"
         
         for (index, movie) in newMovies.enumerated() {
-            text += "\(index + 1). \(movie.title) (\(movie.year))\n"
+            text += "\(index + 1). \(movie.title.uppercased())\r\n"
+            text += "   Year: \(movie.year)\r\n"
             
             if let mood = movie.moodItHelpsWithString {
-                text += "   ❤️ Helps with: \(mood)\n"
+                text += "   Mood: \(mood)\r\n"
             }
             
             if !movie.overview.isEmpty {
-                let shortOverview = movie.overview.prefix(100)
-                text += "   📝 \(shortOverview)\(movie.overview.count > 100 ? "..." : "")\n"
+                let shortOverview = movie.overview.prefix(120)
+                text += "   About: \(shortOverview)\(movie.overview.count > 120 ? "..." : "")\r\n"
             }
             
-            text += "\n"
+            text += "\r\n"
         }
         
-        text += "Total: \(newMovies.count) movie\(newMovies.count == 1 ? "" : "s")\n"
-        text += "\nCreated with MoviesIMiss"
+        text += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\r\n"
+        text += "Created with MoviesIMiss 🎬\r\n\r\n"
+        text += "Find your own movies with the MIM app in the iOS App Store!\r\n"
         
         print("📝 Generated text:")
         print(text)
@@ -138,6 +149,12 @@ struct NewMoviesView: View {
         let printOperation = NSPrintOperation(view: textView, printInfo: printInfo)
         printOperation.run()
         #else
+        shareViaActivityController()
+        #endif
+    }
+    
+    #if os(iOS)
+    private func shareViaActivityController() {
         let printText = generateShareableText()
         let activityVC = UIActivityViewController(activityItems: [printText], applicationActivities: nil)
         
@@ -146,8 +163,12 @@ struct NewMoviesView: View {
            let rootVC = window.rootViewController {
             rootVC.present(activityVC, animated: true)
         }
-        #endif
     }
+    #else
+    private func shareViaActivityController() {
+        // Not available on macOS
+    }
+    #endif
     
     private var emptyStateView: some View {
         VStack(spacing: 20) {
@@ -173,22 +194,15 @@ struct NewMovieRow: View {
     
     var body: some View {
         HStack(spacing: 12) {
-            // Small poster
+            // Small poster with caching
             if let posterPath = movie.posterPath,
                let url = URL(string: "https://image.tmdb.org/t/p/w200\(posterPath)") {
-                AsyncImage(url: url) { phase in
-                    switch phase {
-                    case .empty:
-                        posterPlaceholder
-                    case .success(let image):
-                        image
-                            .resizable()
-                            .aspectRatio(contentMode: .fill)
-                    case .failure:
-                        posterPlaceholder
-                    @unknown default:
-                        posterPlaceholder
-                    }
+                CachedAsyncImage(url: url) { image in
+                    image
+                        .resizable()
+                        .aspectRatio(contentMode: .fill)
+                } placeholder: {
+                    posterPlaceholder
                 }
                 .frame(width: 60, height: 90)
                 .clipShape(RoundedRectangle(cornerRadius: 8))
@@ -205,6 +219,11 @@ struct NewMovieRow: View {
                 Text(movie.year)
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
+                
+                // Vibe badges
+                if let vibes = movie.personalVibes, !vibes.isEmpty {
+                    VibesBadgeRow(vibeStrings: vibes, size: .small)
+                }
                 
                 HStack(spacing: 6) {
                     Image(systemName: "sparkles")
