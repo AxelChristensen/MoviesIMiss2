@@ -166,3 +166,49 @@ enum TMDBProfileImageSize: String {
     case original = "original"
 }
 
+// MARK: - Watch Provider Models
+struct TMDBWatchProvidersResponse: Codable {
+    let results: [String: TMDBCountryProviders]
+    
+    // Get watch providers for a specific country (e.g., "US")
+    func providers(for countryCode: String) -> TMDBCountryProviders? {
+        results[countryCode]
+    }
+}
+
+struct TMDBCountryProviders: Codable {
+    let link: String? // JustWatch link
+    let flatrate: [TMDBProvider]? // Streaming services (Netflix, Disney+, etc.)
+    let buy: [TMDBProvider]? // Purchase options (iTunes, Amazon, etc.)
+    let rent: [TMDBProvider]? // Rental options
+    let ads: [TMDBProvider]? // Free with ads (Tubi, Pluto TV, etc.)
+}
+
+struct TMDBProvider: Codable, Identifiable, Hashable {
+    let providerId: Int
+    let providerName: String
+    let logoPath: String
+    let displayPriority: Int
+    
+    enum CodingKeys: String, CodingKey {
+        case providerId = "provider_id"
+        case providerName = "provider_name"
+        case logoPath = "logo_path"
+        case displayPriority = "display_priority"
+    }
+    
+    var id: Int { providerId }
+    
+    func logoURL(size: TMDBLogoSize = .w92) -> URL? {
+        URL(string: "https://image.tmdb.org/t/p/\(size.rawValue)\(logoPath)")
+    }
+}
+
+enum TMDBLogoSize: String {
+    case w92 = "w92"
+    case w154 = "w154"
+    case w185 = "w185"
+    case original = "original"
+}
+
+

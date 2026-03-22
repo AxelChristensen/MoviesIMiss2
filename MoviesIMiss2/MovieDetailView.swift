@@ -16,6 +16,10 @@ struct MovieDetailView: View {
     @State private var showingRelatedMovies = false
     @State private var showingCustomDatePicker = false
     @State private var customRewatchDate = Date()
+    @State private var watchProviders: TMDBCountryProviders?
+    @State private var isLoadingProviders = false
+    
+    private let tmdbService = TMDBService()
     
     enum RewatchInterval: String, CaseIterable {
         #if DEBUG
@@ -209,6 +213,12 @@ struct MovieDetailView: View {
                     Divider()
                         .padding(.horizontal)
                     
+                    // Where to Watch section
+                    whereToWatchSection
+                    
+                    Divider()
+                        .padding(.horizontal)
+                    
                     // Discover related movies button
                     Button {
                         showingRelatedMovies = true
@@ -288,7 +298,87 @@ struct MovieDetailView: View {
                 }
                 .presentationDetents([.medium, .large])
             }
+            .task {
+                await loadWatchProviders()
+            }
         }
+    }
+    
+    @ViewBuilder
+    private var whereToWatchSection: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Where to Watch")
+                .font(.headline)
+            
+            if isLoadingProviders {
+                ProgressView()
+                    .frame(maxWidth: .infinity)
+                    .padding()
+            } else if let providers = watchProviders {
+                VStack(alignment: .leading, spacing: 12) {
+                    // Streaming services (flatrate)
+                    if let streaming = providers.flatrate, !streaming.isEmpty {
+                        ProviderGroup(title: "Stream", 
+                                    icon: "play.circle.fill",
+                                    color: .blue,
+                                    providers: streaming)
+                    }
+                    
+                    // Free with ads
+                    if let ads = providers.ads, !ads.isEmpty {
+                        ProviderGroup(title: "Free (with ads)", 
+                                    icon: "tv.circle.fill",
+                                    color: .green,
+                                    providers: ads)
+                    }
+                    
+                    // Rental options
+                    if let rent = providers.rent, !rent.isEmpty {
+                        ProviderGroup(title: "Rent", 
+                                    icon: "arrow.down.circle.fill",
+                                    color: .orange,
+                                    providers: rent)
+                    }
+                    
+                    // Purchase options
+                    if let buy = providers.buy, !buy.isEmpty {
+                        ProviderGroup(title: "Buy", 
+                                    icon: "cart.circle.fill",
+                                    color: .purple,
+                                    providers: buy)
+                    }
+                    
+                    // JustWatch link
+                    if let link = providers.link {
+                        Link(destination: URL(string: link)!) {
+                            HStack {
+                                Image(systemName: "link.circle.fill")
+                                Text("View all options on JustWatch")
+                                Spacer()
+                                Image(systemName: "arrow.up.right")
+                            }
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .padding(.top, 4)
+                        }
+                    }
+                }
+            } else {
+                HStack {
+                    Image(systemName: "exclamationmark.triangle")
+                        .foregroundStyle(.secondary)
+                    Text("Streaming information not available")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity)
+                .padding()
+            }
+        }
+        .padding()
+        .background(.regularMaterial)
+        .cornerRadius(12)
+        .padding(.horizontal)
     }
     
     private var posterView: some View {
@@ -360,6 +450,92 @@ struct MovieDetailView: View {
         modelContext.delete(movie)
         try? modelContext.save()
         dismiss()
+    }
+    
+    private func loadWatchProviders() async {
+        isLoadingProviders = true
+        defer { isLoadingProviders = false }
+        
+        do {
+            let response = try await tmdbService.fetchWatchProviders(movieId: movie.tmdbId)
+            // You can change "US" to use user's locale or allow them to select their country
+            watchProviders = response.providers(for: "US")
+        } catch {
+            print("Failed to load watch providers: \(error.localizedDescription)")
+            watchProviders = nil
+        }
+    }
+}
+
+struct ProviderGroup: View {
+    let title: String
+    let icon: String
+    let color: Color
+    let providers: [TMDBProvider]
+    
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Image(systemName: icon)
+                    .foregroundStyle(color)
+                Text(title)
+                    .font(.subheadline)
+                    .fontWeight(.semibold)
+            }
+            
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 12) {
+                    ForEach(providers.sorted(by: { $0.displayPriority < $1.displayPriority })) { provider in
+                        ProviderLogo(provider: provider)
+                    }
+                }
+            }
+        }
+    }
+}
+
+struct ProviderLogo: View {
+    let provider: TMDBProvider
+    
+    var body: some View {
+        VStack(spacing: 4) {
+            if let url = provider.logoURL() {
+                AsyncImage(url: url) { phase in
+                    switch phase {
+                    case .empty:
+                        ProgressView()
+                            .frame(width: 60, height: 60)
+                    case .success(let image):
+                        image
+                            .resizable()
+                            .aspectRatio(contentMode: .fit)
+                            .frame(width: 60, height: 60)
+                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                    case .failure:
+                        placeholderLogo
+                    @unknown default:
+                        placeholderLogo
+                    }
+                }
+            } else {
+                placeholderLogo
+            }
+            
+            Text(provider.providerName)
+                .font(.caption2)
+                .lineLimit(1)
+                .frame(width: 60)
+        }
+    }
+    
+    private var placeholderLogo: some View {
+        RoundedRectangle(cornerRadius: 8)
+            .fill(Color.gray.opacity(0.3))
+            .frame(width: 60, height: 60)
+            .overlay {
+                Image(systemName: "play.tv")
+                    .foregroundStyle(.gray)
+            }
     }
 }
 

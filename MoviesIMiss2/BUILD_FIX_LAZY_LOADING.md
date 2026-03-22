@@ -13,7 +13,7 @@
 ---
 
 ## How to Fix
-
+      
 ### Step 1: Add ImageCache.swift to Xcode
 
 1. In Xcode Project Navigator, right-click your project folder

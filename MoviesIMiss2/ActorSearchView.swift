@@ -298,12 +298,40 @@ struct ActorMoviesView: View {
         
         do {
             // Fetch movies based on search mode
+            // Load multiple pages to ensure we get all significant movies
+            var allMovies: [TMDBMovie] = []
+            
             switch searchMode {
             case .actors:
-                movies = try await tmdbService.fetchMoviesByActor(personId: actor.id)
+                // Load first 12 pages (240 movies) to get a comprehensive filmography
+                for page in 1...12 {
+                    let pageMovies = try await tmdbService.fetchMoviesByActor(personId: actor.id, page: page)
+                    if pageMovies.isEmpty {
+                        break // No more movies
+                    }
+                    allMovies.append(contentsOf: pageMovies)
+                }
             case .directors:
-                movies = try await tmdbService.fetchMoviesByDirector(personId: actor.id)
+                // Load first 12 pages for directors too
+                for page in 1...12 {
+                    let pageMovies = try await tmdbService.fetchMoviesByDirector(personId: actor.id, page: page)
+                    if pageMovies.isEmpty {
+                        break // No more movies
+                    }
+                    allMovies.append(contentsOf: pageMovies)
+                }
             }
+            
+            // Remove duplicates (just in case)
+            var seenIds = Set<Int>()
+            movies = allMovies.filter { movie in
+                if seenIds.contains(movie.id) {
+                    return false
+                }
+                seenIds.insert(movie.id)
+                return true
+            }
+            
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -460,6 +488,11 @@ struct AddMovieSheet: View {
     @State private var selectedVibes: [String] = []
     @State private var vibeNotes: String = ""
     
+    // Watch providers
+    @State private var watchProviders: TMDBCountryProviders?
+    @State private var isLoadingProviders = false
+    private let tmdbService = TMDBService()
+    
     enum RewatchInterval: String, CaseIterable, Identifiable {
         case testIn1Minute = "TEST: In 1 Minute"
         case immediately = "Immediately"
@@ -517,6 +550,9 @@ struct AddMovieSheet: View {
             Form {
                 movieInfoSection
                 
+                // Watch providers section
+                watchProvidersSection
+                
                 seenBeforeSection
                 
                 // Always show vibe section
@@ -546,6 +582,9 @@ struct AddMovieSheet: View {
                         dismiss()
                     }
                 }
+            }
+            .task {
+                await loadWatchProviders()
             }
         }
     }
@@ -653,6 +692,77 @@ struct AddMovieSheet: View {
     private var moodInfoSection: some View {
         Section("Mood Info") {
             TextField("Mood it helps with", text: $moodItHelpsWithString)
+        }
+    }
+    
+    @ViewBuilder
+    private var watchProvidersSection: some View {
+        Section("Where to Watch") {
+            if isLoadingProviders {
+                HStack {
+                    Spacer()
+                    ProgressView()
+                        .padding(.vertical, 8)
+                    Spacer()
+                }
+            } else if let providers = watchProviders {
+                VStack(alignment: .leading, spacing: 12) {
+                    // Streaming services (flatrate)
+                    if let streaming = providers.flatrate, !streaming.isEmpty {
+                        ProviderGroup(title: "Stream", 
+                                    icon: "play.circle.fill",
+                                    color: .blue,
+                                    providers: streaming)
+                    }
+                    
+                    // Free with ads
+                    if let ads = providers.ads, !ads.isEmpty {
+                        ProviderGroup(title: "Free (with ads)", 
+                                    icon: "tv.circle.fill",
+                                    color: .green,
+                                    providers: ads)
+                    }
+                    
+                    // Rent
+                    if let rent = providers.rent, !rent.isEmpty {
+                        ProviderGroup(title: "Rent", 
+                                    icon: "dollarsign.circle.fill",
+                                    color: .orange,
+                                    providers: rent)
+                    }
+                    
+                    // Buy
+                    if let buy = providers.buy, !buy.isEmpty {
+                        ProviderGroup(title: "Buy", 
+                                    icon: "cart.circle.fill",
+                                    color: .purple,
+                                    providers: buy)
+                    }
+                }
+                .padding(.vertical, 4)
+            } else {
+                HStack {
+                    Image(systemName: "tv.slash")
+                        .foregroundStyle(.secondary)
+                    Text("No streaming info available")
+                        .foregroundStyle(.secondary)
+                }
+                .font(.subheadline)
+                .padding(.vertical, 4)
+            }
+        }
+    }
+    
+    private func loadWatchProviders() async {
+        isLoadingProviders = true
+        defer { isLoadingProviders = false }
+        
+        do {
+            let response = try await tmdbService.fetchWatchProviders(movieId: movie.id)
+            watchProviders = response.providers(for: "US")
+        } catch {
+            print("Failed to load watch providers: \(error)")
+            watchProviders = nil
         }
     }
     

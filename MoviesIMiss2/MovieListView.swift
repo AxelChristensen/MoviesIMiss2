@@ -16,6 +16,12 @@ struct MovieListView: View {
     
     @Query(sort: \SavedMovie.dateAdded, order: .reverse) private var allMovies: [SavedMovie]
     
+    @Binding var showingAbout: Bool
+    
+    init(showingAbout: Binding<Bool> = .constant(false)) {
+        self._showingAbout = showingAbout
+    }
+    
     private var processedMovies: [SavedMovie] {
         allMovies.filter { movie in
             movie.statusRawValue == "snoozed" || 
@@ -24,11 +30,38 @@ struct MovieListView: View {
         }
     }
     
+    // Filter pending movies by watch provider
+    private var filteredPendingMovies: [SavedMovie] {
+        guard selectedStreamingProvider != .all else {
+            return pendingMovies
+        }
+        
+        return pendingMovies.filter { movie in
+            guard let providers = watchProviderCache[movie.tmdbId] else {
+                // If we don't have provider data yet, EXCLUDE it from filtered results
+                // This ensures we only show movies we know are available
+                return false
+            }
+            
+            let providerIds = selectedStreamingProvider.providerIds
+            guard !providerIds.isEmpty else {
+                return true
+            }
+            
+            // Check if movie has ANY of the provider IDs for this service
+            return providers.hasAnyProvider(
+                ids: providerIds,
+                freeOnly: selectedStreamingProvider.isFreeOnly,
+                rentalOnly: selectedStreamingProvider.isRentalOnly
+            )
+        }
+    }
+    
     @State private var selectedMovie: SavedMovie?
     @State private var tmdbService = TMDBService()
     @State private var isLoadingCuratedList = false
     @State private var errorMessage: String?
-    @State private var selectedList: MovieListType = .topRated
+    @State private var selectedList: MovieListType = .trending
     @State private var selectedDecade: Decade = .all
     @State private var selectedRating: RatingFilter = .all
     @State private var selectedActor: FamousActor = .all
@@ -38,7 +71,7 @@ struct MovieListView: View {
     @State private var currentPage = 1
     @State private var isLoadingMore = false
     @State private var hasMorePages = true
-    private let maxPages = 10 // Maximum pages to load (200 movies)
+    private let maxPages = 25 // Maximum pages to load (500 movies) - increased for better streaming filter coverage
     
     // Search-related state
     @State private var searchText = ""
@@ -46,6 +79,11 @@ struct MovieListView: View {
     @State private var isSearching = false
     @State private var selectedSearchMovie: TMDBMovie?
     @State private var selectedVibeFilter: String? = nil // nil = show all
+    
+    // Watch provider filtering
+    @State private var selectedStreamingProvider: StreamingProvider = .all
+    @State private var watchProviderCache: [Int: TMDBCountryProviders] = [:]
+    @State private var isLoadingProviders = false
     
     var isShowingSearchResults: Bool {
         !searchText.isEmpty
@@ -56,7 +94,8 @@ struct MovieListView: View {
         selectedDecade != .all || 
         selectedRating != .all || 
         selectedActor != .all ||
-        selectedList != .topRated
+        selectedList != .trending ||
+        selectedStreamingProvider != .all
     }
     
     // Get available vibes from all saved movies with vibes
@@ -122,8 +161,11 @@ struct MovieListView: View {
     }
     
     enum MovieListType: String, CaseIterable {
-        case topRated = "Top Rated"
+        case trending = "Trending This Week"
         case popular = "Popular"
+        case topRated = "Top Rated (8.5+)"
+        case wellReviewed = "Well-Reviewed (7.0+)"
+        case hiddenGems = "Hidden Gems (6.5+)"
         case nowPlaying = "Now Playing"
         case upcoming = "Upcoming"
         case action = "Action"
@@ -132,11 +174,17 @@ struct MovieListView: View {
         case horror = "Horror"
         case sciFi = "Sci-Fi"
         case romance = "Romance"
+        case thriller = "Thriller"
+        case animation = "Animation"
+        case documentary = "Documentary"
         
         var icon: String {
             switch self {
-            case .topRated: return "star.fill"
+            case .trending: return "chart.line.uptrend.xyaxis"
             case .popular: return "flame.fill"
+            case .topRated: return "star.fill"
+            case .wellReviewed: return "hand.thumbsup.fill"
+            case .hiddenGems: return "sparkle"
             case .nowPlaying: return "film.fill"
             case .upcoming: return "calendar"
             case .action: return "bolt.fill"
@@ -145,6 +193,9 @@ struct MovieListView: View {
             case .horror: return "moon.fill"
             case .sciFi: return "sparkles"
             case .romance: return "heart.fill"
+            case .thriller: return "exclamationmark.triangle.fill"
+            case .animation: return "sparkle.magnifyingglass"
+            case .documentary: return "book.fill"
             }
         }
         
@@ -156,6 +207,18 @@ struct MovieListView: View {
             case .horror: return 27
             case .sciFi: return 878
             case .romance: return 10749
+            case .thriller: return 53
+            case .animation: return 16
+            case .documentary: return 99
+            default: return nil
+            }
+        }
+        
+        var minRating: Double? {
+            switch self {
+            case .topRated: return 8.5
+            case .wellReviewed: return 7.0
+            case .hiddenGems: return 6.5
             default: return nil
             }
         }
@@ -274,6 +337,7 @@ struct MovieListView: View {
                 .toolbar {
                     if !isShowingSearchResults {
                         historyButton
+                        streamingProviderMenu
                         decadeMenu
                         listTypeMenu
                         ratingMenu
@@ -282,6 +346,7 @@ struct MovieListView: View {
                             resetFiltersButton
                         }
                         refreshButton
+                        moreMenu
                     }
                 }
                 .sheet(item: $selectedMovie) { movie in
@@ -337,7 +402,22 @@ struct MovieListView: View {
     
     private var moviesList: some View {
         List {
-            ForEach(pendingMovies) { movie in
+            // Show loading indicator when provider data is loading
+            if isLoadingProviders {
+                HStack {
+                    Spacer()
+                    VStack(spacing: 12) {
+                        ProgressView()
+                        Text("Loading streaming availability...")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding()
+                    Spacer()
+                }
+            }
+            
+            ForEach(filteredPendingMovies) { movie in
                 MovieRowView(movie: movie)
                     .contentShape(Rectangle())
                     .onTapGesture {
@@ -345,11 +425,30 @@ struct MovieListView: View {
                     }
                     .onAppear {
                         // Lazy loading: Load more when reaching near the end
-                        if let lastMovie = pendingMovies.last,
+                        if let lastMovie = filteredPendingMovies.last,
                            movie.id == lastMovie.id {
                             loadMoreMoviesIfNeeded()
                         }
                     }
+            }
+            
+            // Show message if filtering removed all movies
+            if !isLoadingProviders && 
+               selectedStreamingProvider != .all && 
+               filteredPendingMovies.isEmpty && 
+               !pendingMovies.isEmpty {
+                VStack(spacing: 12) {
+                    Image(systemName: "tv.slash")
+                        .font(.system(size: 48))
+                        .foregroundStyle(.secondary)
+                    Text("No movies found on \(selectedStreamingProvider.rawValue)")
+                        .font(.headline)
+                    Text("Try a different service or reset filters")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 40)
             }
             
             // Loading indicator at the bottom
@@ -655,8 +754,32 @@ struct MovieListView: View {
     private var listTypeMenu: some ToolbarContent {
         ToolbarItem(placement: .automatic) {
             Menu {
-                ForEach(MovieListType.allCases, id: \.self) { listType in
-                    listTypeButton(for: listType)
+                Section("Discover") {
+                    listTypeButton(for: .trending)
+                    listTypeButton(for: .popular)
+                }
+                
+                Section("By Rating") {
+                    listTypeButton(for: .topRated)
+                    listTypeButton(for: .wellReviewed)
+                    listTypeButton(for: .hiddenGems)
+                }
+                
+                Section("In Theaters") {
+                    listTypeButton(for: .nowPlaying)
+                    listTypeButton(for: .upcoming)
+                }
+                
+                Section("By Genre") {
+                    listTypeButton(for: .action)
+                    listTypeButton(for: .comedy)
+                    listTypeButton(for: .drama)
+                    listTypeButton(for: .horror)
+                    listTypeButton(for: .sciFi)
+                    listTypeButton(for: .romance)
+                    listTypeButton(for: .thriller)
+                    listTypeButton(for: .animation)
+                    listTypeButton(for: .documentary)
                 }
             } label: {
                 Label(selectedList.rawValue, systemImage: selectedList.icon)
@@ -787,13 +910,105 @@ struct MovieListView: View {
         }
     }
     
+    // MARK: - Streaming Provider Filtering
+    
+    private var moreMenu: some ToolbarContent {
+        ToolbarItem(placement: .automatic) {
+            Menu {
+                Button {
+                    showingAbout = true
+                } label: {
+                    Label("About", systemImage: "info.circle")
+                }
+            } label: {
+                Label("About", systemImage: "ellipsis.circle")
+            }
+        }
+    }
+    
+    private var streamingProviderMenu: some ToolbarContent {
+        ToolbarItem(placement: .automatic) {
+            Menu {
+                Section("All Services") {
+                    providerButton(for: .all)
+                }
+                
+                Section("Subscription Services") {
+                    providerButton(for: .netflix)
+                    providerButton(for: .disneyPlus)
+                    providerButton(for: .hulu)
+                    providerButton(for: .hboMax)
+                    providerButton(for: .appleTV)
+                    providerButton(for: .peacock)
+                    providerButton(for: .paramountPlus)
+                    providerButton(for: .amcPlus)
+                    providerButton(for: .youtubeTv)
+                }
+                
+                Section("Amazon Prime Video") {
+                    providerButton(for: .amazonPrimeFree)
+                    providerButton(for: .amazonPrimeRental)
+                }
+                
+                Section("Free (Ad-Supported)") {
+                    providerButton(for: .tubi)
+                    providerButton(for: .plutoTV)
+                }
+            } label: {
+                Label(selectedStreamingProvider.rawValue, 
+                      systemImage: selectedStreamingProvider.icon)
+            }
+        }
+    }
+    
+    private func providerButton(for provider: StreamingProvider) -> some View {
+        Button {
+            selectedStreamingProvider = provider
+            
+            Task {
+                // Always load watch providers when selecting a streaming service
+                await loadWatchProviders()
+                
+                // If we don't have enough movies showing after filtering, load more
+                if provider != .all && filteredPendingMovies.count < 20 {
+                    print("📥 Not enough movies showing for \(provider.rawValue), loading more...")
+                    print("   Filtered: \(filteredPendingMovies.count), Total pending: \(pendingMovies.count)")
+                    
+                    // Keep loading pages until we have enough visible movies or hit the limit
+                    while filteredPendingMovies.count < 50 && hasMorePages && currentPage < maxPages {
+                        print("   Loading page \(currentPage + 1)...")
+                        await loadNextPage()
+                        await loadWatchProviders()
+                        
+                        // Break if we're not finding any matches
+                        if filteredPendingMovies.isEmpty && currentPage > 5 {
+                            print("   ⚠️ No matches found after 5 pages, stopping")
+                            break
+                        }
+                    }
+                    
+                    print("   ✅ Final count: \(filteredPendingMovies.count) movies for \(provider.rawValue)")
+                }
+            }
+        } label: {
+            if selectedStreamingProvider == provider {
+                Label(provider.rawValue, systemImage: provider.icon)
+                Image(systemName: "checkmark")
+            } else {
+                Label(provider.rawValue, systemImage: provider.icon)
+            }
+        }
+    }
+    
     // MARK: - Functions
     
     private func resetAllFilters() {
         selectedDecade = .all
         selectedRating = .all
         selectedActor = .all
-        selectedList = .topRated
+        selectedList = .trending
+        selectedStreamingProvider = .all
+        watchProviderCache.removeAll()
         
         Task {
             await loadCuratedMovies()
@@ -888,28 +1103,42 @@ struct MovieListView: View {
             // Load first page (20 movies)
             try await loadMoviesPage()
             
-            // If we're filtering by rating or actor, automatically load a few more pages
-            // to compensate for the reduced results
-            if selectedRating != .all || selectedActor != .all {
-                // For very high ratings (8.5+), load even more pages since results are sparse
+            // Aggressively load more pages to ensure good streaming filter coverage
+            // Also load more for rating/actor filters
+            let shouldLoadMore = selectedRating != .all || 
+                                selectedActor != .all || 
+                                selectedStreamingProvider != .all
+            
+            if shouldLoadMore {
+                // Determine how many pages to load based on filters
                 let pagesToLoad: Int
-                let minMovies: Int
+                let targetMovies: Int
                 
-                if selectedRating == .nineplus {
-                    pagesToLoad = 7
-                    minMovies = 5
+                if selectedStreamingProvider != .all {
+                    // For streaming filters, load MANY more pages
+                    pagesToLoad = 15
+                    targetMovies = 100 // Target at least 100 movies for good filter coverage
+                    print("🎬 Streaming filter active - loading extra pages for better coverage")
+                } else if selectedRating == .nineplus {
+                    // For very high ratings (8.5+), load many pages since results are sparse
+                    pagesToLoad = 10
+                    targetMovies = 20
                 } else {
-                    pagesToLoad = 3
-                    minMovies = 15
+                    // For other filters, load moderate amount
+                    pagesToLoad = 5
+                    targetMovies = 50
                 }
                 
-                print("🔄 Auto-loading up to \(pagesToLoad) more pages (target: \(minMovies) movies)")
+                print("🔄 Auto-loading up to \(pagesToLoad) more pages (target: \(targetMovies) movies)")
                 
-                // Load up to more pages automatically to get more results
+                // Load pages until we hit target or max pages
                 for _ in 1...pagesToLoad {
-                    if hasMorePages && currentPage < maxPages && pendingMovies.count < minMovies {
+                    if hasMorePages && currentPage < maxPages && pendingMovies.count < targetMovies {
                         currentPage += 1
                         try await loadMoviesPage()
+                        
+                        // Brief delay to avoid overwhelming the API
+                        try await Task.sleep(for: .milliseconds(100))
                     } else {
                         break
                     }
@@ -1025,12 +1254,19 @@ struct MovieListView: View {
                 minRating: minRating,
                 actorId: nil
             )
+        } else if let listMinRating = selectedList.minRating {
+            // Rating-based lists (Top Rated, Well-Reviewed, Hidden Gems)
+            print("🔍 Using discover with minimum rating: \(listMinRating)")
+            movies = try await tmdbService.fetchByRating(
+                minRating: listMinRating,
+                page: currentPage
+            )
         } else {
-            // Standard list type (Top Rated, Popular, etc.)
-            print("🔍 Using standard endpoint (Top Rated/Popular/etc)")
+            // Standard list type (Trending, Popular, Now Playing, Upcoming)
+            print("🔍 Using standard endpoint (Trending/Popular/etc)")
             switch selectedList {
-            case .topRated:
-                movies = try await tmdbService.fetchTopRated(page: currentPage)
+            case .trending:
+                movies = try await tmdbService.fetchTrending(page: currentPage)
             case .popular:
                 movies = try await tmdbService.fetchPopular(page: currentPage)
             case .nowPlaying:
@@ -1038,7 +1274,7 @@ struct MovieListView: View {
             case .upcoming:
                 movies = try await tmdbService.fetchUpcoming(page: currentPage)
             default:
-                movies = try await tmdbService.fetchTopRated(page: currentPage)
+                movies = try await tmdbService.fetchTrending(page: currentPage)
             }
             
             // Apply rating filter client-side for these endpoints
@@ -1107,6 +1343,84 @@ struct MovieListView: View {
         print("💾 Saved: \(savedCount) new | 🚫 Skipped duplicates: \(duplicateCount) | ⚠️ Already in watchlist: \(duplicateInWatchlist)")
         
         try modelContext.save()
+    }
+    
+    private func loadWatchProviders() async {
+        guard selectedStreamingProvider != .all else {
+            return
+        }
+        
+        isLoadingProviders = true
+        defer { isLoadingProviders = false }
+        
+        // Get all pending movie IDs that we don't have cached yet
+        let movieIds = pendingMovies
+            .filter { watchProviderCache[$0.tmdbId] == nil }
+            .map { $0.tmdbId }
+        
+        guard !movieIds.isEmpty else { 
+            print("✅ All provider data already cached (\(watchProviderCache.count) movies)")
+            return 
+        }
+        
+        print("\n🎬 Loading watch providers for \(movieIds.count) movies...")
+        print("📊 Total pending movies: \(pendingMovies.count)")
+        print("📦 Already cached: \(watchProviderCache.count)")
+        
+        // Batch load providers with progress updates
+        let providers = await tmdbService.fetchWatchProvidersForMovies(movieIds: movieIds)
+        
+        // Update cache
+        for (movieId, provider) in providers {
+            watchProviderCache[movieId] = provider
+        }
+        
+        print("✅ Loaded providers for \(providers.count) movies")
+        print("📦 Total cached: \(watchProviderCache.count)")
+        
+        // Debug: Show sample provider data
+        let providerIds = selectedStreamingProvider.providerIds
+        if !providerIds.isEmpty {
+            print("\n🔍 Filter: \(selectedStreamingProvider.rawValue)")
+            print("   Provider IDs: \(providerIds)")
+            print("   Free only: \(selectedStreamingProvider.isFreeOnly)")
+            print("   Rental only: \(selectedStreamingProvider.isRentalOnly)")
+            
+            // Count matches across ALL pending movies
+            var matchCount = 0
+            var sampleMatches: [(String, String)] = []
+            
+            for movie in pendingMovies {
+                guard let movieProviders = watchProviderCache[movie.tmdbId] else { continue }
+                
+                let matches = movieProviders.hasAnyProvider(
+                    ids: providerIds,
+                    freeOnly: selectedStreamingProvider.isFreeOnly,
+                    rentalOnly: selectedStreamingProvider.isRentalOnly
+                )
+                
+                if matches {
+                    matchCount += 1
+                    if sampleMatches.count < 5 {
+                        sampleMatches.append((movie.title, movieProviders.debugDescription))
+                    }
+                }
+            }
+            
+            print("\n🎯 Match Results:")
+            print("   Total matches: \(matchCount) / \(pendingMovies.count)")
+            print("   Filtered list will show: \(matchCount) movies")
+            
+            if !sampleMatches.isEmpty {
+                print("\n✅ Sample matches:")
+                for (title, providers) in sampleMatches {
+                    print("   📽️ \(title)")
+                    print("      \(providers)")
+                }
+            } else {
+                print("\n⚠️ No matches found - you may need to load more movies")
+            }
+        }
     }
     
     private func unsnoozeMovie(_ movie: SavedMovie) {

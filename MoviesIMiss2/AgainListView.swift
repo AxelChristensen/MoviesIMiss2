@@ -27,7 +27,13 @@ struct AgainListView: View {
     @State private var selectedMovie: SavedMovie?
     @State private var selectedVibeFilter: String? = nil // nil = show all
     
-    // Use a more explicit sorting approach with vibe filtering
+    // Watch provider filtering
+    @State private var selectedStreamingProvider: StreamingProvider = .all
+    @State private var watchProviderCache: [Int: TMDBCountryProviders] = [:]
+    @State private var isLoadingProviders = false
+    private let tmdbService = TMDBService()
+    
+    // Use a more explicit sorting approach with vibe filtering and streaming provider filtering
     var sortedByNextWatch: [SavedMovie] {
         var allMovies = Array(watchlistMovies)
         
@@ -35,6 +41,26 @@ struct AgainListView: View {
         if let vibeFilter = selectedVibeFilter {
             allMovies = allMovies.filter { movie in
                 movie.personalVibes?.contains(vibeFilter) ?? false
+            }
+        }
+        
+        // Filter by streaming provider if one is selected
+        if selectedStreamingProvider != .all {
+            allMovies = allMovies.filter { movie in
+                guard let providers = watchProviderCache[movie.tmdbId] else {
+                    return false // Exclude if no provider data
+                }
+                
+                let providerIds = selectedStreamingProvider.providerIds
+                guard !providerIds.isEmpty else {
+                    return false
+                }
+                
+                return providers.hasAnyProvider(
+                    ids: providerIds,
+                    freeOnly: selectedStreamingProvider.isFreeOnly,
+                    rentalOnly: selectedStreamingProvider.isRentalOnly
+                )
             }
         }
         
@@ -118,6 +144,9 @@ struct AgainListView: View {
             }
             .navigationTitle("Again!")
             .toolbar {
+                // Streaming provider filter
+                streamingProviderMenu
+                
                 ToolbarItemGroup(placement: .automatic) {
                     if !sortedByNextWatch.isEmpty {
                         ShareLink(
@@ -180,6 +209,90 @@ struct AgainListView: View {
                 print("========================\n")
             }
         }
+    }
+    
+    // MARK: - Streaming Provider Menu
+    
+    private var streamingProviderMenu: some ToolbarContent {
+        ToolbarItem(placement: .automatic) {
+            Menu {
+                Section("All Services") {
+                    providerButton(for: .all)
+                }
+                
+                Section("Subscription Services") {
+                    providerButton(for: .netflix)
+                    providerButton(for: .disneyPlus)
+                    providerButton(for: .hulu)
+                    providerButton(for: .hboMax)
+                    providerButton(for: .appleTV)
+                    providerButton(for: .peacock)
+                    providerButton(for: .paramountPlus)
+                    providerButton(for: .amcPlus)
+                    providerButton(for: .youtubeTv)
+                }
+                
+                Section("Amazon Prime Video") {
+                    providerButton(for: .amazonPrimeFree)
+                    providerButton(for: .amazonPrimeRental)
+                }
+                
+                Section("Free (Ad-Supported)") {
+                    providerButton(for: .tubi)
+                    providerButton(for: .plutoTV)
+                }
+            } label: {
+                Label(selectedStreamingProvider.rawValue, 
+                      systemImage: selectedStreamingProvider.icon)
+            }
+        }
+    }
+    
+    private func providerButton(for provider: StreamingProvider) -> some View {
+        Button {
+            selectedStreamingProvider = provider
+            Task {
+                await loadWatchProviders()
+            }
+        } label: {
+            if selectedStreamingProvider == provider {
+                Label(provider.rawValue, systemImage: provider.icon)
+                Image(systemName: "checkmark")
+            } else {
+                Label(provider.rawValue, systemImage: provider.icon)
+            }
+        }
+    }
+    
+    private func loadWatchProviders() async {
+        guard selectedStreamingProvider != .all else {
+            return
+        }
+        
+        isLoadingProviders = true
+        defer { isLoadingProviders = false }
+        
+        // Get all movie IDs that we don't have cached yet
+        let movieIds = watchlistMovies
+            .filter { watchProviderCache[$0.tmdbId] == nil }
+            .map { $0.tmdbId }
+        
+        guard !movieIds.isEmpty else {
+            print("✅ All provider data already cached for Again! list")
+            return
+        }
+        
+        print("🎬 Loading watch providers for \(movieIds.count) Again! movies...")
+        
+        // Batch load providers
+        let providers = await tmdbService.fetchWatchProvidersForMovies(movieIds: movieIds)
+        
+        // Update cache
+        for (movieId, provider) in providers {
+            watchProviderCache[movieId] = provider
+        }
+        
+        print("✅ Loaded providers for \(providers.count) Again! movies")
     }
     
     private func deleteMovie(_ movie: SavedMovie) {

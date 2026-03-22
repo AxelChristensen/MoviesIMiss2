@@ -317,7 +317,73 @@ class TMDBService {
         return try await performRequest(url: url)
     }
     
+    func fetchWatchProviders(movieId: Int) async throws -> TMDBWatchProvidersResponse {
+        guard let apiKey = apiKey else {
+            throw TMDBError.noAPIKey
+        }
+        
+        var components = URLComponents(string: "\(baseURL)/movie/\(movieId)/watch/providers")
+        components?.queryItems = [
+            URLQueryItem(name: "api_key", value: apiKey)
+        ]
+        
+        guard let url = components?.url else {
+            throw TMDBError.invalidURL
+        }
+        
+        do {
+            let (data, response) = try await URLSession.shared.data(from: url)
+            
+            guard let httpResponse = response as? HTTPURLResponse,
+                  httpResponse.statusCode == 200 else {
+                throw TMDBError.invalidResponse
+            }
+            
+            let decoder = JSONDecoder()
+            return try decoder.decode(TMDBWatchProvidersResponse.self, from: data)
+        } catch let error as TMDBError {
+            throw error
+        } catch let error as DecodingError {
+            throw TMDBError.decodingError(error)
+        } catch {
+            throw TMDBError.networkError(error)
+        }
+    }
+    
+    /// Fetch watch providers for multiple movies efficiently
+    /// Returns a dictionary mapping movie ID to its watch providers
+    func fetchWatchProvidersForMovies(movieIds: [Int], countryCode: String = "US") async -> [Int: TMDBCountryProviders] {
+        var results: [Int: TMDBCountryProviders] = [:]
+        
+        // Fetch providers concurrently for better performance
+        await withTaskGroup(of: (Int, TMDBCountryProviders?).self) { group in
+            for movieId in movieIds {
+                group.addTask {
+                    do {
+                        let response = try await self.fetchWatchProviders(movieId: movieId)
+                        return (movieId, response.providers(for: countryCode))
+                    } catch {
+                        print("Failed to fetch providers for movie \(movieId): \(error)")
+                        return (movieId, nil)
+                    }
+                }
+            }
+            
+            for await (movieId, providers) in group {
+                if let providers = providers {
+                    results[movieId] = providers
+                }
+            }
+        }
+        
+        return results
+    }
+    
     // MARK: - Additional List Methods
+    
+    func fetchTrending(page: Int = 1) async throws -> [TMDBMovie] {
+        try await fetchMovieList(endpoint: "trending/movie/week", page: page)
+    }
     
     func fetchPopular(page: Int = 1) async throws -> [TMDBMovie] {
         try await fetchMovieList(endpoint: "movie/popular", page: page)
@@ -389,6 +455,27 @@ class TMDBService {
         }
         
         components?.queryItems = queryItems
+        
+        guard let url = components?.url else {
+            throw TMDBError.invalidURL
+        }
+        
+        return try await performRequest(url: url)
+    }
+    
+    func fetchByRating(minRating: Double, page: Int = 1) async throws -> [TMDBMovie] {
+        guard let apiKey = apiKey else {
+            throw TMDBError.noAPIKey
+        }
+        
+        var components = URLComponents(string: "\(baseURL)/discover/movie")
+        components?.queryItems = [
+            URLQueryItem(name: "api_key", value: apiKey),
+            URLQueryItem(name: "vote_average.gte", value: "\(minRating)"),
+            URLQueryItem(name: "vote_count.gte", value: "100"), // Filter out obscure movies
+            URLQueryItem(name: "page", value: "\(page)"),
+            URLQueryItem(name: "sort_by", value: "popularity.desc")
+        ]
         
         guard let url = components?.url else {
             throw TMDBError.invalidURL

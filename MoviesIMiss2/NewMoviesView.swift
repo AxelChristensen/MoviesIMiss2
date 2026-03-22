@@ -24,9 +24,49 @@ struct NewMoviesView: View {
     
     @State private var selectedMovie: SavedMovie?
     
-    // Filter to show only movies without a last watched date (never watched)
+    // Watch provider filtering
+    @State private var selectedStreamingProvider: StreamingProvider = .all
+    @State private var watchProviderCache: [Int: TMDBCountryProviders] = [:]
+    @State private var isLoadingProviders = false
+    private let tmdbService = TMDBService()
+    
+    // Filter to show only movies without a last watched date (never watched) and by streaming provider
     var newMovies: [SavedMovie] {
-        watchlistMovies.filter { $0.lastWatched == nil }
+        var movies = watchlistMovies.filter { $0.lastWatched == nil }
+        
+        // Filter by streaming provider if one is selected
+        if selectedStreamingProvider != .all {
+            movies = movies.filter { movie in
+                guard let providers = watchProviderCache[movie.tmdbId] else {
+                    // If provider data isn't loaded yet, exclude the movie
+                    // (it will appear once data loads)
+                    print("⚠️ No provider data cached for \(movie.title)")
+                    return false
+                }
+                
+                let providerIds = selectedStreamingProvider.providerIds
+                guard !providerIds.isEmpty else {
+                    return false
+                }
+                
+                // Check if movie has ANY of the provider IDs for this service
+                let hasProvider = providers.hasAnyProvider(
+                    ids: providerIds,
+                    freeOnly: selectedStreamingProvider.isFreeOnly,
+                    rentalOnly: selectedStreamingProvider.isRentalOnly
+                )
+                
+                if !hasProvider {
+                    print("❌ \(movie.title) doesn't have \(selectedStreamingProvider.rawValue)")
+                } else {
+                    print("✅ \(movie.title) HAS \(selectedStreamingProvider.rawValue)")
+                }
+                
+                return hasProvider
+            }
+        }
+        
+        return movies
     }
     
     var body: some View {
@@ -60,6 +100,9 @@ struct NewMoviesView: View {
             }
             .navigationTitle("New!")
             .toolbar {
+                // Streaming provider filter
+                streamingProviderMenu
+                
                 ToolbarItemGroup(placement: .automatic) {
                     if !newMovies.isEmpty {
                         ShareLink(
@@ -88,6 +131,146 @@ struct NewMoviesView: View {
             }
             .sheet(item: $selectedMovie) { movie in
                 MovieDetailView(movie: movie)
+            }
+            .task {
+                // Load providers when view appears
+                await loadWatchProviders()
+            }
+            .onChange(of: selectedStreamingProvider) { _, _ in
+                // Reload providers when filter changes
+                Task {
+                    await loadWatchProviders()
+                }
+            }
+        }
+    }
+    
+    // MARK: - Streaming Provider Menu
+    
+    private var streamingProviderMenu: some ToolbarContent {
+        ToolbarItem(placement: .automatic) {
+            Menu {
+                Section("All Services") {
+                    providerButton(for: .all)
+                }
+                
+                Section("Subscription Services") {
+                    providerButton(for: .netflix)
+                    providerButton(for: .disneyPlus)
+                    providerButton(for: .hulu)
+                    providerButton(for: .hboMax)
+                    providerButton(for: .appleTV)
+                    providerButton(for: .peacock)
+                    providerButton(for: .paramountPlus)
+                    providerButton(for: .amcPlus)
+                    providerButton(for: .youtubeTv)
+                }
+                
+                Section("Amazon Prime Video") {
+                    providerButton(for: .amazonPrimeFree)
+                    providerButton(for: .amazonPrimeRental)
+                }
+                
+                Section("Free (Ad-Supported)") {
+                    providerButton(for: .tubi)
+                    providerButton(for: .plutoTV)
+                }
+            } label: {
+                Label(selectedStreamingProvider.rawValue, 
+                      systemImage: selectedStreamingProvider.icon)
+            }
+        }
+    }
+    
+    private func providerButton(for provider: StreamingProvider) -> some View {
+        Button {
+            selectedStreamingProvider = provider
+            // onChange handler will trigger the reload
+        } label: {
+            if selectedStreamingProvider == provider {
+                Label(provider.rawValue, systemImage: provider.icon)
+                Image(systemName: "checkmark")
+            } else {
+                Label(provider.rawValue, systemImage: provider.icon)
+            }
+        }
+    }
+    
+    private func loadWatchProviders() async {
+        guard selectedStreamingProvider != .all else {
+            return
+        }
+        
+        isLoadingProviders = true
+        defer { isLoadingProviders = false }
+        
+        // Get all movie IDs that we don't have cached yet
+        let movieIds = watchlistMovies
+            .filter { $0.lastWatched == nil && watchProviderCache[$0.tmdbId] == nil }
+            .map { $0.tmdbId }
+        
+        guard !movieIds.isEmpty else {
+            print("✅ All provider data already cached for New! list")
+            
+            // Still show which movies match even if cached
+            let providerIds = selectedStreamingProvider.providerIds
+            if !providerIds.isEmpty {
+                let matchingMovies = newMovies.filter { movie in
+                    guard let movieProviders = watchProviderCache[movie.tmdbId] else { return false }
+                    return movieProviders.hasAnyProvider(
+                        ids: providerIds,
+                        freeOnly: selectedStreamingProvider.isFreeOnly,
+                        rentalOnly: selectedStreamingProvider.isRentalOnly
+                    )
+                }
+                
+                print("🎯 NEW! Movies matching \(selectedStreamingProvider.rawValue): \(matchingMovies.count)")
+                if !matchingMovies.isEmpty {
+                    print("✨ Matching NEW! movies:")
+                    for movie in matchingMovies {
+                        print("   ✅ \(movie.title)")
+                    }
+                }
+            }
+            
+            return
+        }
+        
+        print("🎬 Loading watch providers for \(movieIds.count) New! movies...")
+        
+        // Batch load providers
+        let providers = await tmdbService.fetchWatchProvidersForMovies(movieIds: movieIds)
+        
+        // Update cache
+        for (movieId, provider) in providers {
+            watchProviderCache[movieId] = provider
+            
+            // Debug: Print provider info for each movie
+            if let movie = watchlistMovies.first(where: { $0.tmdbId == movieId }) {
+                print("📺 \(movie.title): \(provider.debugDescription)")
+            }
+        }
+        
+        print("✅ Loaded providers for \(providers.count) New! movies")
+        
+        // Show which movies match the current filter
+        let providerIds = selectedStreamingProvider.providerIds
+        if !providerIds.isEmpty {
+            let matchingMovies = newMovies.filter { movie in
+                guard let movieProviders = watchProviderCache[movie.tmdbId] else { return false }
+                return movieProviders.hasAnyProvider(
+                    ids: providerIds,
+                    freeOnly: selectedStreamingProvider.isFreeOnly,
+                    rentalOnly: selectedStreamingProvider.isRentalOnly
+                )
+            }
+            
+            print("\n🎯 NEW! Movies matching \(selectedStreamingProvider.rawValue): \(matchingMovies.count)")
+            if !matchingMovies.isEmpty {
+                print("\n✨ Matching NEW! movies:")
+                for movie in matchingMovies {
+                    print("   ✅ \(movie.title)")
+                }
             }
         }
     }
